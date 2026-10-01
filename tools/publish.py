@@ -148,7 +148,8 @@ def ssh_opts(srv) -> list:
 
 def run(cmd):
     print("  $", " ".join(cmd))
-    if subprocess.run(cmd).returncode:
+    # cwd=dist и относительные пути: scp принимает «C:» в абсолютном пути за имя хоста
+    if subprocess.run(cmd, cwd=DIST).returncode:
         die("команда завершилась с ошибкой")
 
 
@@ -157,10 +158,12 @@ def upload(srv, zip_path: str, manifest_path: str):
     d = srv["remote_dir"]
     opts = ssh_opts(srv)
     # Сначала архив, потом version.json — клиенты не увидят версию без архива
-    run(["scp", "-P", srv["port"], *opts, zip_path, f"{target}:{d}/"])
-    run(["scp", "-P", srv["port"], *opts, manifest_path, f"{target}:{d}/version.json.tmp"])
+    zip_name = os.path.basename(zip_path)
+    run(["scp", "-P", srv["port"], *opts, zip_name, f"{target}:{d}/"])
+    run(["scp", "-P", srv["port"], *opts, os.path.basename(manifest_path),
+         f"{target}:{d}/version.json.tmp"])
     run(["ssh", "-p", srv["port"], *opts, target,
-         f"chmod 644 {d}/version.json.tmp {d}/{os.path.basename(zip_path)}"
+         f"chmod 644 {d}/version.json.tmp {d}/{zip_name}"
          f" && mv -f {d}/version.json.tmp {d}/version.json"])
 
 
