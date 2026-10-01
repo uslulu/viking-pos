@@ -8,6 +8,7 @@ from PyQt6.QtCore import Qt, QDate, QThread, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 import db.connection as db
 from datetime import datetime, timedelta
+from ui.fmt import fmt_qty
 
 C_BLUE='#2B579A'; C_BLUE_D='#1E3F7A'; C_GREEN='#217346'
 
@@ -116,7 +117,7 @@ class OrderDetailDialog(QDialog):
                 lt = float(item.get('LineTotal') or 0); total += lt
                 for col,(val,align) in enumerate([
                     (item.get('GoodName') or '', Qt.AlignmentFlag.AlignLeft),
-                    (f"{item.get('Qtty',0):.0f}", Qt.AlignmentFlag.AlignCenter),
+                    (fmt_qty(item.get('Qtty')), Qt.AlignmentFlag.AlignCenter),
                     (f"{item.get('PriceOut',0):.2f}", Qt.AlignmentFlag.AlignRight),
                     (f'{lt:.2f}', Qt.AlignmentFlag.AlignRight),
                 ]):

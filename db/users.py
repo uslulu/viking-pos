@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 from db.connection import fetch_all, fetch_one, execute
 
 
@@ -8,14 +9,18 @@ def authenticate(code: str, password: str):
     if not user:
         return None
     stored = (user.get("Password") or "").strip()
-    if stored == password:
-        return user
-    if stored == "" and password == "":
-        return user
-    md5 = hashlib.md5(password.encode()).hexdigest().upper()
-    if stored.upper() == md5:
-        return user
-    return None
+    if _is_md5(stored):
+        md5 = hashlib.md5(password.encode()).hexdigest().upper()
+        ok = hmac.compare_digest(stored.upper(), md5)
+    else:
+        # Старые записи с паролем открытым текстом (или пустым).
+        # Хэш как пароль не принимаем: иначе вход по украденному хэшу
+        ok = hmac.compare_digest(stored.encode(), password.encode())
+    return user if ok else None
+
+
+def _is_md5(s: str) -> bool:
+    return len(s) == 32 and all(c in "0123456789abcdefABCDEF" for c in s)
 
 
 def get_all_users() -> list:

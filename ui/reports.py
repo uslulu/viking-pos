@@ -16,6 +16,8 @@ class ReportLoader(QThread):
         super().__init__(); self.date_from=date_from; self.date_to=date_to
     def run(self):
         try:
+            # Только оплаченные заказы: открытые столы в выручку не идут.
+            # Скидка уже учтена в PriceOut (см. db.operations.close_table)
             # Итого
             r=db.fetch_one("""
                 SELECT
@@ -24,6 +26,8 @@ class ReportLoader(QThread):
                 FROM Operations o
                 WHERE o.OperType=2
                   AND CAST(o.Date AS DATE) BETWEEN ? AND ?
+                  AND EXISTS (SELECT 1 FROM Payments p
+                              WHERE p.OperType=2 AND p.Acct=o.Acct)
             """,[self.date_from,self.date_to])
             # Наличные vs карта из Payments
             pay=db.fetch_all("""
@@ -45,6 +49,8 @@ class ReportLoader(QThread):
                 JOIN Goods g ON o.GoodID=g.ID
                 WHERE o.OperType=2
                   AND CAST(o.Date AS DATE) BETWEEN ? AND ?
+                  AND EXISTS (SELECT 1 FROM Payments p
+                              WHERE p.OperType=2 AND p.Acct=o.Acct)
                 GROUP BY g.Name ORDER BY revenue DESC
             """,[self.date_from,self.date_to])
             # По дням
@@ -55,6 +61,8 @@ class ReportLoader(QThread):
                 FROM Operations o
                 WHERE o.OperType=2
                   AND CAST(o.Date AS DATE) BETWEEN ? AND ?
+                  AND EXISTS (SELECT 1 FROM Payments p
+                              WHERE p.OperType=2 AND p.Acct=o.Acct)
                 GROUP BY CAST(o.Date AS DATE) ORDER BY day DESC
             """,[self.date_from,self.date_to])
             self.done.emit({'summary':r,'cash':cash,'card':card,'transfer':transfer,'paid_total':paid_total,'top':top,'by_day':by_day})

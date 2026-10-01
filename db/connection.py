@@ -4,11 +4,13 @@
 """
 import pyodbc
 import threading
+import time
 from typing import Optional
 
 _lock = threading.Lock()
 _conn_params: dict = {}
 _local = threading.local()  # у каждого потока своё соединение
+_PING_AFTER = 60  # сек простоя, после которых соединение проверяется перед запросом
 
 
 def connect(server: str, database: str) -> bool:
@@ -42,8 +44,8 @@ def _get_conn() -> pyodbc.Connection:
     if conn is None:
         conn = _make_connection()
         _local.conn = conn
-    else:
-        # Проверяем что соединение живо
+    elif time.monotonic() - getattr(_local, "used", 0) > _PING_AFTER:
+        # После простоя проверяем что соединение живо
         try:
             conn.execute("SELECT 1")
         except:
@@ -53,6 +55,7 @@ def _get_conn() -> pyodbc.Connection:
                 pass
             conn = _make_connection()
             _local.conn = conn
+    _local.used = time.monotonic()
     return conn
 
 
