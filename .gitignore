@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+# Настройки конкретной точки — не в репозитории и не в архиве обновления
+config.ini
+# Рабочие файлы автообновления на терминале
+backup/
+update_tmp/
+update.log*
+update_state.json
+main.log
+# Артефакты сборки
+dist/
+build/
+*.spec

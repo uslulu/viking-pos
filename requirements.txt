@@ -1,0 +1,4 @@
+PyQt6==6.7.0
+pyodbc==5.1.0
+SQLAlchemy==2.0.30
+PyQt6-Qt6==6.7.0
