@@ -101,7 +101,7 @@ class OrderDetailDialog(QDialog):
 
     def _print(self):
         from ui.printer import print_receipt_dialog
-        print_receipt_dialog(self.acct, self, "Викинг")
+        print_receipt_dialog(self.acct, self)
 
     def _load(self):
         try:

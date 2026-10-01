@@ -1,3 +1,3 @@
 @echo off
-cd /d "%~dp0"
-start "" /B pythonw main.py
+rem Start POS via updater (same as double-clicking launch.vbs)
+wscript.exe "%~dp0launch.vbs"

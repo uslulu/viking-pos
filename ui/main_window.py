@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon, QKeySequence, QShortcut
 import os
+from app_config import DB_NAME
 
 
 class NavBtn(QPushButton):
@@ -81,7 +82,7 @@ class MainWindow(QMainWindow):
         self.setStatusBar(sb)
         user_name = self.user.get("Name") or self.user.get("Code", "")
         role_txt = "Кассир" if self.role == "cashier" else "Администратор"
-        sb.showMessage(f"{role_txt}: {user_name}  •  База: cafel  "
+        sb.showMessage(f"{role_txt}: {user_name}  •  База: {DB_NAME}  "
                        f"| Escape — выход из полноэкранного режима")
 
     def _build_sidebar(self):

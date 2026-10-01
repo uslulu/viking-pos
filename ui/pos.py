@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
+from app_config import CAFE_NAME
 from db.goods import get_groups, get_all as get_goods, get_last_price
 from db.operations import (
     get_open_tables, get_table_items, get_next_acct,
@@ -727,7 +728,7 @@ class POSPage(QWidget):
                     # Печать чека
                     try:
                         from ui.printer import print_receipt
-                        print_receipt(self.current_acct, "Викинг", dlg.received_cash, dlg.change)
+                        print_receipt(self.current_acct, CAFE_NAME, dlg.received_cash, dlg.change)
                     except Exception as pe:
                         print(f'print error: {pe}')
                     self._go_tables()

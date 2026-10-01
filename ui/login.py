@@ -5,9 +5,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 import db.connection as db
 from db.users import authenticate, get_all_users
-
-SERVER   = r"localhost\SQLEXPRESS"
-DATABASE = "cafel"
+from app_config import DB_SERVER as SERVER, DB_NAME as DATABASE
 
 
 class ConnectWorker(QThread):

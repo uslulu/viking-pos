@@ -4,6 +4,7 @@ from PyQt6.QtCore import Qt, QRectF, QMarginsF
 from PyQt6.QtGui import QPageSize, QPageLayout
 from datetime import datetime
 import db.connection as db
+from app_config import CAFE_NAME
 
 PRINTER_NAME = "T58&R58"
 
@@ -29,7 +30,7 @@ def get_printer() -> QPrinter:
     return printer
 
 
-def print_receipt(acct: int, cafe_name: str = "Викинг",
+def print_receipt(acct: int, cafe_name: str = CAFE_NAME,
                   received_cash: float = None, change: float = 0.0) -> tuple:
     try:
         items = db.fetch_all("""
@@ -146,7 +147,7 @@ def print_receipt(acct: int, cafe_name: str = "Викинг",
         return False, str(e)
 
 
-def print_receipt_dialog(acct: int, parent=None, cafe_name: str = "Викинг"):
+def print_receipt_dialog(acct: int, parent=None, cafe_name: str = CAFE_NAME):
     from PyQt6.QtWidgets import QMessageBox
     ok, err = print_receipt(acct, cafe_name)
     if ok:
