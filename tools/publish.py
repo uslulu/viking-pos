@@ -1,5 +1,5 @@
 """
-Выпуск новой версии кассы.
+Выпуск новой версии кассы на GitHub Releases.
 
     py tools/publish.py                       # 1.0.0 -> 1.0.1
     py tools/publish.py minor -n "Скидки"     # 1.0.1 -> 1.1.0
@@ -8,28 +8,37 @@
     py tools/publish.py --dry-run             # только собрать архив в dist/
 
 Что делает:
-  1. проверяет, что в git нет незакоммиченных изменений;
+  1. проверяет, что в git нет незакоммиченных изменений и gh авторизован;
   2. поднимает VERSION, коммитит, ставит тег vX.Y.Z;
   3. собирает dist/viking-pos-X.Y.Z.zip из файлов под git
      (без __pycache__, config.ini, tools/ и служебных файлов);
   4. считает sha256 и пишет dist/version.json;
-  5. по scp выкладывает архив, затем version.json (атомарно, через mv).
+  5. отправляет коммит и тег на GitHub, создаёт релиз с архивом и
+     version.json. Релиз сначала черновик и становится «последним»
+     только когда оба файла загружены — терминалы не увидят полрелиза.
+  6. если есть tools/publish.local.ini — копирует version.json на старый
+     сервер (для терминалов, у которых в config.ini старый адрес и
+     updater до 1.0.2).
 
-Параметры сервера — в tools/publish.ini.
+Терминалы читают https://github.com/<repo>/releases/latest/download/version.json
+Нужен GitHub CLI: winget install GitHub.cli, затем один раз gh auth login.
 """
 import argparse
 import configparser
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
+import urllib.request
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DIST = os.path.join(ROOT, "dist")
 VERSION_FILE = os.path.join(ROOT, "VERSION")
 PUBLISH_INI = os.path.join(ROOT, "tools", "publish.ini")
+LOCAL_INI = os.path.join(ROOT, "tools", "publish.local.ini")
 
 # Не попадают в архив обновления
 EXCLUDE_TOP = {"tools", "dist", "build", "backup", "update_tmp", ".gitignore",
@@ -48,6 +57,21 @@ def git(*args) -> str:
     if r.returncode:
         die(f"git {' '.join(args)}: {r.stderr.strip()}")
     return r.stdout.strip()
+
+
+def gh_path() -> str:
+    path = shutil.which("gh") or r"C:\Program Files\GitHub CLI\gh.exe"
+    if not os.path.exists(path):
+        die("не найден GitHub CLI: winget install GitHub.cli, затем gh auth login")
+    return path
+
+
+def gh(*args, check=True) -> subprocess.CompletedProcess:
+    r = subprocess.run([gh_path(), *args], cwd=ROOT, capture_output=True,
+                       text=True, encoding="utf-8")
+    if check and r.returncode:
+        die(f"gh {' '.join(args[:3])}: {(r.stderr or r.stdout).strip()}")
+    return r
 
 
 def parse_version(s):
@@ -113,10 +137,10 @@ def sha256_of(path: str) -> str:
     return h.hexdigest()
 
 
-def write_manifest(version: str, zip_path: str, base_url: str, notes: str) -> str:
+def write_manifest(version: str, zip_path: str, zip_url: str, notes: str) -> str:
     manifest = {
         "version": version,
-        "url": base_url.rstrip("/") + "/" + os.path.basename(zip_path),
+        "url": zip_url,
         "sha256": sha256_of(zip_path),
         "notes": notes,
     }
@@ -127,52 +151,65 @@ def write_manifest(version: str, zip_path: str, base_url: str, notes: str) -> st
     return path
 
 
-def load_server():
+def load_repo() -> str:
     cfg = configparser.ConfigParser(interpolation=None)
     if not cfg.read(PUBLISH_INI, encoding="utf-8-sig"):
         die(f"нет {PUBLISH_INI}")
-    s = cfg["server"]
-    return {
-        "host": s["host"], "user": s["user"], "port": s.get("port", "22"),
-        "key": os.path.expanduser(s.get("key", "")),
-        "remote_dir": s["remote_dir"].rstrip("/"), "base_url": s["base_url"],
-    }
+    return cfg["github"]["repo"].strip()
 
 
-def ssh_opts(srv) -> list:
+def zip_url(repo: str, version: str) -> str:
+    return f"https://github.com/{repo}/releases/download/v{version}/viking-pos-{version}.zip"
+
+
+def latest_manifest_url(repo: str) -> str:
+    return f"https://github.com/{repo}/releases/latest/download/version.json"
+
+
+def publish_github(repo: str, version: str, notes: str, zip_path: str, manifest_path: str):
+    tag = f"v{version}"
+    print(f"Отправляю коммиты и тег {tag} на GitHub…")
+    git("push", "origin", "HEAD:main")
+    git("push", "origin", tag)
+    exists = gh("release", "view", tag, "--repo", repo, check=False).returncode == 0
+    if exists:
+        print(f"Релиз {tag} уже есть — обновляю файлы")
+        gh("release", "upload", tag, zip_path, manifest_path, "--clobber", "--repo", repo)
+    else:
+        print(f"Создаю релиз {tag}…")
+        gh("release", "create", tag, zip_path, manifest_path, "--repo", repo,
+           "--draft", "--title", f"Версия {version}", "--notes", notes or f"Версия {version}")
+    # Только теперь, когда оба файла на месте, релиз становится «последним»
+    gh("release", "edit", tag, "--repo", repo, "--draft=false", "--latest")
+
+
+def publish_legacy(manifest_path: str):
+    """Копия version.json на старый сервер — для терминалов с updater до 1.0.2."""
+    cfg = configparser.ConfigParser(interpolation=None)
+    if not cfg.read(LOCAL_INI, encoding="utf-8-sig") or "legacy_server" not in cfg:
+        return
+    s = cfg["legacy_server"]
+    target = f"{s['user']}@{s['host']}"
+    d = s["remote_dir"].rstrip("/")
     opts = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15"]
-    if srv["key"]:
-        opts += ["-i", srv["key"], "-o", "IdentitiesOnly=yes"]
-    return opts
-
-
-def run(cmd):
-    print("  $", " ".join(cmd))
+    if s.get("key"):
+        opts += ["-i", os.path.expanduser(s["key"]), "-o", "IdentitiesOnly=yes"]
+    print(f"Копирую version.json на старый сервер {s['host']}…")
     # cwd=dist и относительные пути: scp принимает «C:» в абсолютном пути за имя хоста
-    if subprocess.run(cmd, cwd=DIST).returncode:
-        die("команда завершилась с ошибкой")
+    for cmd in (["scp", "-P", s.get("port", "22"), *opts, os.path.basename(manifest_path),
+                 f"{target}:{d}/version.json.tmp"],
+                ["ssh", "-p", s.get("port", "22"), *opts, target,
+                 f"chmod 644 {d}/version.json.tmp && mv -f {d}/version.json.tmp {d}/version.json"]):
+        if subprocess.run(cmd, cwd=DIST).returncode:
+            print("  не удалось — терминалы со старым адресом обновятся позже", file=sys.stderr)
+            return
 
 
-def upload(srv, zip_path: str, manifest_path: str):
-    target = f"{srv['user']}@{srv['host']}"
-    d = srv["remote_dir"]
-    opts = ssh_opts(srv)
-    # Сначала архив, потом version.json — клиенты не увидят версию без архива
-    zip_name = os.path.basename(zip_path)
-    run(["scp", "-P", srv["port"], *opts, zip_name, f"{target}:{d}/"])
-    run(["scp", "-P", srv["port"], *opts, os.path.basename(manifest_path),
-         f"{target}:{d}/version.json.tmp"])
-    run(["ssh", "-p", srv["port"], *opts, target,
-         f"chmod 644 {d}/version.json.tmp {d}/{zip_name}"
-         f" && mv -f {d}/version.json.tmp {d}/version.json"])
-
-
-def check_published(srv, version: str):
-    import urllib.request
-    url = srv["base_url"].rstrip("/") + "/version.json"
+def check_published(url: str, version: str):
     try:
-        with urllib.request.urlopen(url, timeout=10) as r:
-            data = json.loads(r.read().decode("utf-8"))
+        req = urllib.request.Request(url, headers={"Cache-Control": "no-cache"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            data = json.loads(r.read().decode("utf-8-sig"))
         ok = data.get("version") == version
         print(f"{url}: version={data.get('version')}" + ("  ✓" if ok else "  ✗ ожидалась " + version))
     except Exception as e:
@@ -192,17 +229,19 @@ def main():
 
     current = read_version()
     parse_version(current)
+    repo = load_repo()
 
     if args.dry_run:
         version = next_version(current, args.bump)
         zip_path = build_zip(version)
-        write_manifest(version, zip_path, "https://example.invalid/", args.notes)
+        write_manifest(version, zip_path, zip_url(repo, version), args.notes)
         print(f"Собрано: {zip_path}")
         return
 
-    srv = load_server()
     if git("status", "--porcelain"):
         die("есть незакоммиченные изменения — сначала git commit")
+    if gh("auth", "status", check=False).returncode:
+        die("GitHub CLI не авторизован — выполните один раз: gh auth login")
 
     if args.upload_only:
         version = current
@@ -224,15 +263,15 @@ def main():
         print(f"Коммит и тег {tag} созданы")
 
     zip_path = build_zip(version)
-    manifest_path = write_manifest(version, zip_path, srv["base_url"], notes)
-    print(f"Выкладываю {os.path.basename(zip_path)} на {srv['host']}…")
+    manifest_path = write_manifest(version, zip_path, zip_url(repo, version), notes)
     try:
-        upload(srv, zip_path, manifest_path)
+        publish_github(repo, version, notes, zip_path, manifest_path)
     except SystemExit:
         print(f"\nВыкладка не удалась. Коммит и тег {tag} уже созданы — после исправления "
               f"запустите:\n  py tools/publish.py --upload-only", file=sys.stderr)
         raise
-    check_published(srv, version)
+    publish_legacy(manifest_path)
+    check_published(latest_manifest_url(repo), version)
     print(f"Готово: версия {version} опубликована. Терминалы обновятся при следующем запуске.")
 
 

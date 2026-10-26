@@ -49,7 +49,9 @@ STARTED_FLAG = os.path.join(APP_DIR, "update_started.flag")
 BACKUP_DIR = os.path.join(APP_DIR, "backup")
 TMP_DIR = os.path.join(APP_DIR, "update_tmp")
 
-DEFAULT_URL = "https://food.sheolon.ru/pos-updates/version.json"
+DEFAULT_URL = "https://github.com/uslulu/viking-pos/releases/latest/download/version.json"
+# Старый адрес из config.ini первых установок — переводим на GitHub
+LEGACY_URLS = {"https://food.sheolon.ru/pos-updates/version.json"}
 CHECK_TIMEOUT = 5            # сек, на version.json
 DOWNLOAD_TIMEOUT = 5         # сек, на каждую операцию сокета при скачивании
 DOWNLOAD_DEADLINE = 300      # сек, на весь архив
@@ -390,6 +392,9 @@ def do_update(cfg, state: dict, ui):
         log.info("Автообновление выключено в config.ini")
         return
     url = cfg.get("update", "url").strip()
+    if url in LEGACY_URLS:
+        log.info("Адрес обновлений %s заменён на %s", url, DEFAULT_URL)
+        url = DEFAULT_URL
     check_scheme(url, cfg)
     ctx = ssl_context(cfg)
     local = read_local_version()

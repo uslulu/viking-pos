@@ -34,7 +34,8 @@ warehouse/
 
 ## Автообновление
 `launch.vbs` → `py updater.py` → `py main.py`. Updater сверяет `VERSION`
-с `version.json` на сервере, при новой версии скачивает архив, проверяет
+с `version.json` последнего релиза на GitHub
+(`releases/latest/download/version.json`), при новой версии скачивает архив, проверяет
 sha256, кладёт бэкап в `backup/<версия>` и распаковывает поверх. Если новая
 версия падает до показа главного окна — откат из бэкапа, версия больше не
 ставится. Лог — `update.log`, вывод кассы — `main.log`.
@@ -45,7 +46,9 @@ git commit -am "..."
 py tools/publish.py -n "Что нового"          # patch: 1.0.0 -> 1.0.1
 py tools/publish.py minor -n "Что нового"    # 1.0.1 -> 1.1.0
 ```
-Сервер — в `tools/publish.ini`.
+Скрипт создаёт тег и GitHub Release с архивом и `version.json`; репозиторий —
+в `tools/publish.ini`. Нужен GitHub CLI: `winget install GitHub.cli`, затем один
+раз `gh auth login`.
 
 ## Этапы разработки
 - [x] Этап 1 — Каркас, авторизация, дашборд

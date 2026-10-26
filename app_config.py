@@ -18,7 +18,7 @@ _DEFAULTS = {
     },
     "update": {
         "enabled": "true",
-        "url": "https://food.sheolon.ru/pos-updates/version.json",
+        "url": "https://github.com/uslulu/viking-pos/releases/latest/download/version.json",
     },
 }
 
