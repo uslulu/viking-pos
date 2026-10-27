@@ -6,6 +6,12 @@
     py tools/publish.py 2.0.0 -n "..."        # явная версия
     py tools/publish.py --upload-only         # повторно выложить текущую версию
     py tools/publish.py --dry-run             # только собрать архив в dist/
+    py tools/publish.py minor --test -n "..." # тестовый выпуск: кассы его не видят
+    py tools/publish.py --promote             # тестовый выпуск текущей версии -> всем
+
+Безопасный порядок: выпустить с --test, вручную поставить архив релиза на
+одну кассу и проверить; затем --promote — тот же архив (тот же sha256)
+становится «последним», и остальные кассы предложат обновиться.
 
 Что делает:
   1. проверяет, что в git нет незакоммиченных изменений и gh авторизован;
@@ -166,7 +172,8 @@ def latest_manifest_url(repo: str) -> str:
     return f"https://github.com/{repo}/releases/latest/download/version.json"
 
 
-def publish_github(repo: str, version: str, notes: str, zip_path: str, manifest_path: str):
+def publish_github(repo: str, version: str, notes: str, zip_path: str, manifest_path: str,
+                   test: bool = False):
     tag = f"v{version}"
     print(f"Отправляю коммиты и тег {tag} на GitHub…")
     git("push", "origin", "HEAD:main")
@@ -179,8 +186,30 @@ def publish_github(repo: str, version: str, notes: str, zip_path: str, manifest_
         print(f"Создаю релиз {tag}…")
         gh("release", "create", tag, zip_path, manifest_path, "--repo", repo,
            "--draft", "--title", f"Версия {version}", "--notes", notes or f"Версия {version}")
+    if test:
+        # Pre-release не бывает «последним»: releases/latest его не отдаёт
+        gh("release", "edit", tag, "--repo", repo, "--draft=false",
+           "--prerelease", "--latest=false")
+        return
     # Только теперь, когда оба файла на месте, релиз становится «последним»
     gh("release", "edit", tag, "--repo", repo, "--draft=false", "--latest")
+
+
+def promote(repo: str, version: str):
+    """Тестовый выпуск -> «последний»: без пересборки, файлы те же."""
+    tag = f"v{version}"
+    r = gh("release", "view", tag, "--repo", repo, "--json", "isPrerelease,isDraft,assets")
+    info = json.loads(r.stdout)
+    assets = {a["name"] for a in info.get("assets", [])}
+    if {"version.json", f"viking-pos-{version}.zip"} - assets:
+        die(f"в релизе {tag} нет архива или version.json: {sorted(assets)}")
+    if info.get("isDraft"):
+        die(f"релиз {tag} — черновик; выложите его заново: py tools/publish.py --upload-only --test")
+    os.makedirs(DIST, exist_ok=True)
+    gh("release", "download", tag, "--repo", repo, "-p", "version.json", "-D", DIST, "--clobber")
+    print(f"Делаю {tag} последним выпуском…")
+    gh("release", "edit", tag, "--repo", repo, "--prerelease=false", "--latest")
+    return os.path.join(DIST, "version.json")
 
 
 def publish_legacy(manifest_path: str):
@@ -225,6 +254,10 @@ def main():
                     help="без поднятия версии: собрать и выложить текущую (тег должен быть на HEAD)")
     ap.add_argument("--dry-run", action="store_true",
                     help="только собрать архив в dist/, без git и выкладки")
+    ap.add_argument("--test", action="store_true",
+                    help="тестовый выпуск (pre-release): кассы его не получают")
+    ap.add_argument("--promote", action="store_true",
+                    help="сделать тестовый выпуск текущей версии последним — кассы предложат обновиться")
     args = ap.parse_args()
 
     current = read_version()
@@ -238,10 +271,18 @@ def main():
         print(f"Собрано: {zip_path}")
         return
 
-    if git("status", "--porcelain"):
-        die("есть незакоммиченные изменения — сначала git commit")
     if gh("auth", "status", check=False).returncode:
         die("GitHub CLI не авторизован — выполните один раз: gh auth login")
+
+    if args.promote:
+        manifest_path = promote(repo, current)
+        publish_legacy(manifest_path)
+        check_published(latest_manifest_url(repo), current)
+        print(f"Готово: версия {current} — последняя. Кассы предложат обновиться при запуске.")
+        return
+
+    if git("status", "--porcelain"):
+        die("есть незакоммиченные изменения — сначала git commit")
 
     if args.upload_only:
         version = current
@@ -265,14 +306,19 @@ def main():
     zip_path = build_zip(version)
     manifest_path = write_manifest(version, zip_path, zip_url(repo, version), notes)
     try:
-        publish_github(repo, version, notes, zip_path, manifest_path)
+        publish_github(repo, version, notes, zip_path, manifest_path, test=args.test)
     except SystemExit:
         print(f"\nВыкладка не удалась. Коммит и тег {tag} уже созданы — после исправления "
               f"запустите:\n  py tools/publish.py --upload-only", file=sys.stderr)
         raise
+    if args.test:
+        print(f"Готово: тестовый выпуск {version}. Кассы его не видят.\n"
+              f"Архив для ручной установки: {zip_path}\n"
+              f"После проверки на кассе: py tools/publish.py --promote")
+        return
     publish_legacy(manifest_path)
     check_published(latest_manifest_url(repo), version)
-    print(f"Готово: версия {version} опубликована. Терминалы обновятся при следующем запуске.")
+    print(f"Готово: версия {version} опубликована. Кассы предложат обновиться при запуске.")
 
 
 if __name__ == "__main__":

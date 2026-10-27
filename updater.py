@@ -4,7 +4,9 @@
     py updater.py
 
 1. Сверяет локальный VERSION с version.json на сервере (таймаут 5 сек).
-2. Если на сервере версия новее: скачивает zip, проверяет sha256 и содержимое,
+2. Если на сервере версия новее — спрашивает кассира «Обновить сейчас /
+   Позже» (без ответа за ASK_TIMEOUT сек — «Позже», касса запускается как
+   обычно). При согласии скачивает zip, проверяет sha256 и содержимое,
    копирует текущие файлы в backup/<текущая версия>, распаковывает архив
    поверх и обновляет VERSION.
 3. Запускает main.py. Сразу после обновления следит за ним: если main.py
@@ -17,7 +19,12 @@
 Только стандартная библиотека: обновлятор не должен зависеть от того,
 что он обновляет. config.ini, backup/ и логи никогда не перезаписываются.
 
+Ручной откат на предыдущую версию (rollback.bat):
+
+    py updater.py --rollback
+
 Дополнительные ключи config.ini, секция [update]:
+    ask = false — ставить обновления без вопроса
     ca_file = путь к PEM, если сервер с самоподписанным сертификатом
     allow_http = true — только для отладки
 """
@@ -58,6 +65,7 @@ DOWNLOAD_DEADLINE = 300      # сек, на весь архив
 MAX_ZIP_SIZE = 200 * 1024 * 1024
 KEEP_BACKUPS = 3
 SHOW_WINDOW_DELAY = 700      # мс: при быстрой проверке окно не мелькает
+ASK_TIMEOUT = 60             # сек: без ответа на вопрос об обновлении — «Позже»
 
 # Верхний уровень папки, который обновление и откат не трогают
 PRESERVE = {
@@ -153,7 +161,7 @@ def read_config() -> configparser.ConfigParser:
         shutil.copyfile(CONFIG_EXAMPLE, CONFIG_FILE)
         log.info("config.ini не найден — создан из config.example.ini")
     cfg = configparser.ConfigParser(interpolation=None)
-    cfg.read_dict({"update": {"enabled": "true", "url": DEFAULT_URL,
+    cfg.read_dict({"update": {"enabled": "true", "url": DEFAULT_URL, "ask": "true",
                               "ca_file": "", "allow_http": "false"}})
     try:
         cfg.read(CONFIG_FILE, encoding="utf-8-sig")
@@ -387,28 +395,48 @@ def recover_interrupted(state: dict):
         rollback(state, "установка была прервана")
 
 
-def do_update(cfg, state: dict, ui):
+def check_update(cfg, state: dict):
+    """version.json новой версии, которую можно ставить, или None."""
     if not cfg.getboolean("update", "enabled"):
         log.info("Автообновление выключено в config.ini")
-        return
+        return None
     url = cfg.get("update", "url").strip()
     if url in LEGACY_URLS:
         log.info("Адрес обновлений %s заменён на %s", url, DEFAULT_URL)
         url = DEFAULT_URL
     check_scheme(url, cfg)
-    ctx = ssl_context(cfg)
     local = read_local_version()
 
-    manifest = fetch_manifest_deadline(url, ctx, cfg)
+    manifest = fetch_manifest_deadline(url, ssl_context(cfg), cfg)
     remote = manifest["version"]
     if parse_version(remote) <= parse_version(local):
         log.info("Версия %s актуальна (на сервере %s)", local, remote)
-        return
+        return None
     if remote in state.get("bad_versions", []):
         log.info("Версия %s пропущена: ранее была откачена", remote)
-        return
-
+        return None
     log.info("Найдена новая версия %s (текущая %s)", remote, local)
+    return manifest
+
+
+def confirm_update(cfg, manifest: dict) -> bool:
+    if not cfg.getboolean("update", "ask"):
+        return True
+    try:
+        agreed = ask_update(read_local_version(), manifest["version"],
+                            str(manifest.get("notes") or ""))
+    except Exception as e:  # нет tkinter / дисплея — без согласия не ставим
+        log.warning("Не удалось спросить об обновлении: %s", e)
+        return False
+    log.info("Обновление до %s: %s", manifest["version"],
+             "кассир согласился" if agreed else "отложено")
+    return agreed
+
+
+def install_update(cfg, state: dict, manifest: dict, ui):
+    remote = manifest["version"]
+    local = read_local_version()
+    ctx = ssl_context(cfg)
     ui.set(f"Обновление до версии {remote}…\nНе выключайте терминал", 0)
     rmtree(TMP_DIR)
     os.makedirs(TMP_DIR)
@@ -599,6 +627,105 @@ class UpdateWindow:
         root.destroy()
 
 
+def ask_update(local: str, remote: str, notes: str) -> bool:
+    """Окно «Доступна новая версия»: True — обновить сейчас. Без ответа
+    за ASK_TIMEOUT сек — False («Позже»), чтобы касса не стояла."""
+    import tkinter as tk
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        pass
+    answer = [False]
+    root = tk.Tk()
+    root.withdraw()
+    root.overrideredirect(True)
+    root.attributes("-topmost", True)
+    root.configure(bg="#2B579A")
+    frame = tk.Frame(root, bg="#FFFFFF", padx=28, pady=22)
+    frame.pack(padx=2, pady=2, fill="both", expand=True)
+    tk.Label(frame, text=f"Доступна новая версия {remote}", bg="#FFFFFF",
+             fg="#1E3F7A", font=("Segoe UI", 16, "bold")).pack()
+    tk.Label(frame, text=f"Сейчас установлена {local}", bg="#FFFFFF",
+             fg="#666666", font=("Segoe UI", 11)).pack(pady=(2, 0))
+    if notes:
+        if len(notes) > 300:
+            notes = notes[:300] + "…"
+        tk.Label(frame, text=notes, bg="#FFFFFF", fg="#222222", wraplength=460,
+                 justify="left", font=("Segoe UI", 11)).pack(pady=(12, 0))
+    tk.Label(frame, text="Обновление займёт меньше минуты.\n"
+                         "Если удобнее позже — касса запустится как обычно,\n"
+                         "а предложение повторится при следующем запуске.",
+             bg="#FFFFFF", fg="#444444", font=("Segoe UI", 11),
+             justify="center").pack(pady=(12, 0))
+    buttons = tk.Frame(frame, bg="#FFFFFF")
+    buttons.pack(pady=(18, 0))
+
+    def choose(value):
+        answer[0] = value
+        root.quit()
+
+    tk.Button(buttons, text="Обновить сейчас", command=lambda: choose(True),
+              bg="#217346", fg="#FFFFFF", activebackground="#1A5C35",
+              activeforeground="#FFFFFF", font=("Segoe UI", 14, "bold"),
+              relief="flat", padx=22, pady=12).pack(side="left", padx=8)
+    later = tk.Button(buttons, text="Позже", command=lambda: choose(False),
+                      bg="#E0E0E0", fg="#333333", activebackground="#CCCCCC",
+                      font=("Segoe UI", 14), relief="flat", padx=22, pady=12)
+    later.pack(side="left", padx=8)
+    countdown = tk.Label(frame, bg="#FFFFFF", fg="#888888", font=("Segoe UI", 10))
+    countdown.pack(pady=(12, 0))
+    left = [ASK_TIMEOUT]
+
+    def tick():
+        if left[0] <= 0:
+            choose(False)
+            return
+        countdown.config(text=f"Без ответа через {left[0]} с — «Позже»")
+        left[0] -= 1
+        root.after(1000, tick)
+
+    root.update_idletasks()
+    w, h = root.winfo_reqwidth(), root.winfo_reqheight()
+    root.geometry(f"+{(root.winfo_screenwidth() - w) // 2}+{(root.winfo_screenheight() - h) // 2}")
+    root.deiconify()
+    root.focus_force()
+    tick()
+    root.mainloop()
+    root.destroy()
+    return answer[0]
+
+
+def manual_rollback() -> int:
+    """Возвращает предыдущую версию из backup/ (rollback.bat). Текущая версия
+    помечается плохой и больше не предлагается."""
+    if mutex_exists(MAIN_MUTEX):
+        print("Сначала закройте кассу, затем повторите откат.")
+        return 1
+    local = read_local_version()
+    try:
+        names = [d for d in os.listdir(BACKUP_DIR)
+                 if not d.endswith(".tmp") and d != local
+                 and os.path.isdir(os.path.join(BACKUP_DIR, d))]
+    except OSError:
+        names = []
+    if not names:
+        print("Нет сохранённых предыдущих версий в папке backup — откатывать не на что.")
+        return 1
+    names.sort(key=lambda d: os.path.getmtime(os.path.join(BACKUP_DIR, d)), reverse=True)
+    target = names[0]
+    log.warning("Ручной откат %s -> %s", local, target)
+    restore_backup(os.path.join(BACKUP_DIR, target), app_files(APP_DIR))
+    state = load_state()
+    bad = state.setdefault("bad_versions", [])
+    if local not in bad:
+        bad.append(local)
+    state.pop("pending", None)
+    save_state(state)
+    print(f"Готово: версия {local} заменена на {read_local_version()}.")
+    print(f"Версия {local} больше не будет предлагаться к установке.")
+    return 0
+
+
 # ── Точка входа ─────────────────────────────────────────────────────────────
 
 def main():
@@ -606,7 +733,16 @@ def main():
     mutex = acquire_mutex(UPDATER_MUTEX)
     if mutex is None:
         # Кассир нажал ярлык повторно, пока идёт обновление
+        if "--rollback" in sys.argv[1:]:
+            print("Сейчас идёт проверка или установка обновления — повторите откат позже.")
         return
+
+    if "--rollback" in sys.argv[1:]:
+        try:
+            sys.exit(manual_rollback())
+        except UpdateError as e:
+            print(f"Откат не выполнен: {e}")
+            sys.exit(1)
 
     state = {}
     main_running = False
@@ -619,8 +755,14 @@ def main():
         else:
             cfg = read_config()
             if not state.get("pending"):
-                UpdateWindow().run(lambda ui: do_update(cfg, state, ui),
+                found = []
+                UpdateWindow().run(lambda ui: found.append(check_update(cfg, state)),
                                    "Проверка обновлений…")
+                manifest = found[0] if found else None
+                if manifest and confirm_update(cfg, manifest):
+                    UpdateWindow().run(
+                        lambda ui: install_update(cfg, state, manifest, ui),
+                        f"Обновление до версии {manifest['version']}…\nНе выключайте терминал")
     except Exception as e:
         log.error("Обновление не выполнено: %s", e, exc_info=not isinstance(e, (UpdateError, OSError)))
 
