@@ -14,7 +14,7 @@ _DEFAULTS = {
         "database": "cafel",
     },
     "cafe": {
-        "name": "Викинг",
+        "name": "",
     },
     "update": {
         "enabled": "true",

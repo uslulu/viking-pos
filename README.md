@@ -1,9 +1,9 @@
 # Касса
 
 Программа для сенсорного POS-терминала кафе: столы, заказы, оплата, чеки,
-отчёты. Написана на Python + PyQt6. Работает с базой **Microinvest Warehouse**
-на MS SQL Server, поэтому продажи с кассы видны в Microinvest, а товары и
-сотрудники берутся оттуда же.
+отчёты, меню и сотрудники. Написана на Python + PyQt6, данные хранит в своей
+базе на MS SQL Server (переход на PostgreSQL —
+[в планах](docs/DB_MIGRATION.md)).
 
 <p align="center">
   <img src="docs/screenshots/order.png" width="820" alt="Экран заказа">
@@ -31,7 +31,6 @@
 - Обновления с GitHub: при запуске касса предлагает «Обновить сейчас / Позже»,
   а при сбое откатывается сама.
 - `rollback.bat` — ручной откат на предыдущую версию.
-- `db_report.bat` — отчёт о подключённой базе (только чтение).
 
 ## Скриншоты
 
@@ -50,7 +49,7 @@
 ```
 launch.vbs ──► updater.py ──► main.py ──► окно входа ──► касса / управление
                (обновления)                │
-                                           └──► MS SQL Server (база Microinvest)
+                                           └──► база кассы (MS SQL Server)
 ```
 
 | Путь | Что там |
@@ -58,27 +57,30 @@ launch.vbs ──► updater.py ──► main.py ──► окно входа 
 | `main.py` | Точка входа кассы |
 | `updater.py` | Проверка и установка обновлений, откат, запуск `main.py` |
 | `ui/` | Экраны: `pos.py` касса, `goods.py`, `staff.py`, `orders.py`, `reports.py`, `printer.py` печать |
-| `db/` | Запросы к SQL Server; `report.py` — отчёт о базе |
+| `db/` | Запросы к базе |
 | `config.example.ini` | Шаблон настроек точки (`config.ini`) |
 | `tools/publish.py` | Выпуск новой версии на GitHub Releases |
-| `docs/` | [Описание базы](docs/DATABASE.md), скриншоты |
+| `docs/` | Описание базы, план перехода на PostgreSQL, скриншоты |
 
-**База данных** — какие таблицы касса читает и пишет, как хранится заказ и
-оплата, полезные SQL-запросы, ограничения: **[docs/DATABASE.md](docs/DATABASE.md)**.
+**База данных**
+- [docs/DATABASE.md](docs/DATABASE.md) — таблицы, как хранятся заказ и оплата,
+  жизненный цикл заказа, полезные SQL-запросы, ограничения.
+- [docs/DB_MIGRATION.md](docs/DB_MIGRATION.md) — что в коде завязано на
+  SQL Server и как по шагам перейти на PostgreSQL без простоя.
 
 ## Установка на терминал
 
 Нужны Windows, Python 3.12 из Microsoft Store (команда `py`), ODBC Driver 17
-for SQL Server, доступ пользователя Windows к базе на SQL Server и термопринтер
-58 мм (T58/R58).
+for SQL Server, база кассы на SQL Server с доступом для пользователя Windows и
+термопринтер 58 мм (T58/R58). Пустую базу программа пока создать не умеет —
+новая точка получает копию существующей (см. [DATABASE.md](docs/DATABASE.md)).
 
 **Первая установка**
 1. Распакуйте архив `viking-pos-X.Y.Z.zip` из
    [последнего релиза](https://github.com/uslulu/viking-pos/releases/latest) в папку кассы.
 2. Запустите `install.bat` — он поставит зависимости и создаст `config.ini`.
-   В `config.ini` укажите сервер и базу.
+   В `config.ini` укажите сервер, базу и название кафе для чека.
 3. Ярлык на рабочем столе — на `launch.vbs`.
-4. Запустите `db_report.bat`: отчёт покажет, подходит ли база кассе.
 
 **Ручная установка поверх старой версии**
 1. Закройте кассу и скопируйте папку кассы целиком (например, в `Касса_старая`).
@@ -91,7 +93,7 @@ for SQL Server, доступ пользователя Windows к базе на S
 Лежит рядом с `main.py`, шаблон — `config.example.ini`. Обновлениями не
 перезаписывается.
 - `[database] server, database` — SQL Server и база (Windows-аутентификация)
-- `[cafe] name` — название в чеке
+- `[cafe] name` — название кафе в шапке чека (пусто — без названия)
 - `[update] enabled, ask, url` — обновления; `ask = false` — ставить без вопроса
 
 ## Обновления

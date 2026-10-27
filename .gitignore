@@ -14,4 +14,3 @@ build/
 *.spec
 # Локальные настройки выпуска (адрес старого сервера)
 tools/publish.local.ini
-db_report.txt

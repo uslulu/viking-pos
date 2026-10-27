@@ -132,7 +132,8 @@ def print_receipt(acct: int, cafe_name: str = CAFE_NAME,
             y += lh
 
         # Шапка
-        draw(cafe_name, size=12, bold=True, align=Qt.AlignmentFlag.AlignHCenter)
+        if cafe_name:
+            draw(cafe_name, size=12, bold=True, align=Qt.AlignmentFlag.AlignHCenter)
         draw(f"Чек № {acct}", size=8, align=Qt.AlignmentFlag.AlignHCenter)
         draw(datetime.now().strftime("%d.%m.%Y  %H:%M"),
              size=8, align=Qt.AlignmentFlag.AlignHCenter)
