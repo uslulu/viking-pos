@@ -47,7 +47,7 @@ PUBLISH_INI = os.path.join(ROOT, "tools", "publish.ini")
 LOCAL_INI = os.path.join(ROOT, "tools", "publish.local.ini")
 
 # Не попадают в архив обновления
-EXCLUDE_TOP = {"tools", "dist", "build", "backup", "update_tmp", ".gitignore",
+EXCLUDE_TOP = {"tools", "docs", "dist", "build", "backup", "update_tmp", ".gitignore",
                ".gitattributes", "config.ini", "update_state.json"}
 EXCLUDE_PARTS = {"__pycache__", ".git"}
 
