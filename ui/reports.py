@@ -7,6 +7,7 @@ from PyQt6.QtCore import Qt, QDate, QThread, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 import db.connection as db
 from datetime import datetime, timedelta
+from ui.loader import LoaderSlot
 
 C_BLUE='#2B579A'; C_GREEN='#217346'; C_RED='#C00000'
 
@@ -72,7 +73,7 @@ class ReportLoader(QThread):
 
 class ReportsPage(QWidget):
     def __init__(self,parent=None):
-        super().__init__(parent); self._loader=None; self._build_ui()
+        super().__init__(parent); self._loader=LoaderSlot(self._on_data); self._build_ui()
 
     def _build_ui(self):
         v=QVBoxLayout(self); v.setContentsMargins(20,0,20,20); v.setSpacing(0)
@@ -183,9 +184,7 @@ class ReportsPage(QWidget):
         df=self.date_from.date().toPyDate()
         dt=self.date_to.date().toPyDate()
         self.lbl_loading.setText('Загрузка...')
-        self._loader=ReportLoader(df,dt)
-        self._loader.done.connect(self._on_data)
-        self._loader.start()
+        self._loader.start(ReportLoader(df,dt))
 
     def _on_data(self,data):
         self.lbl_loading.setText('')

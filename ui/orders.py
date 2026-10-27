@@ -9,6 +9,7 @@ from PyQt6.QtGui import QColor, QFont
 import db.connection as db
 from datetime import datetime, timedelta
 from ui.fmt import fmt_qty
+from ui.loader import LoaderSlot
 
 C_BLUE='#2B579A'; C_BLUE_D='#1E3F7A'; C_GREEN='#217346'
 
@@ -139,7 +140,7 @@ class OrdersPage(QWidget):
         level = int((user or {}).get('UserLevel') or 0)
         self.is_admin = level > 0
         self._orders = []
-        self._loader = None
+        self._loader = LoaderSlot(self._on_data)
         self._build_ui()
         self._today()
 
@@ -226,9 +227,7 @@ class OrdersPage(QWidget):
         dt = self.date_to.date().toPyDate()
         uid = None if self.is_admin else self.user_id
         self.lbl_status.setText('Загрузка...')
-        self._loader = OrdersLoader(df, dt, uid)
-        self._loader.done.connect(self._on_data)
-        self._loader.start()
+        self._loader.start(OrdersLoader(df, dt, uid))
 
     def _on_data(self, orders):
         self._orders = orders

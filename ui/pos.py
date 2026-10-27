@@ -11,9 +11,10 @@ from db.goods import get_groups, get_all as get_goods, get_last_price
 from db.operations import (
     get_open_tables, get_table_items,
     add_item, change_qty, remove_item, close_table, cancel_table,
-    get_objects, get_default_partner, order_total
+    get_objects, get_default_partner, order_total, is_paid
 )
 from ui.fmt import fmt_qty
+from ui.loader import LoaderSlot
 
 C_BLUE='#2B579A'; C_BLUE_D='#1E3F7A'; C_BLUE_BTN='#316AC5'
 C_GREEN='#217346'; C_RED='#C00000'; C_BG='#F0F0F0'
@@ -335,6 +336,8 @@ class POSPage(QWidget):
         self._all_goods=[]; self._cat_buttons=[]; self._goods_cache={}
         # Состояния столов: {1: None, 2: acct, ...}
         self._table_accts={i:None for i in range(1,NUM_TABLES+1)}
+        self._goods_loader=LoaderSlot(self._on_goods)
+        self._tables_loader=LoaderSlot(self._on_tables)
         self._build_ui()
         QTimer.singleShot(200,self._load_goods)
         QTimer.singleShot(300,self._refresh_tables)
@@ -374,7 +377,9 @@ class POSPage(QWidget):
             f=QFrame(); f.setFixedSize(14,14)
             f.setStyleSheet(f'background:{color};border:1px solid #999;border-radius:2px;')
             leg.addWidget(f); leg.addWidget(QLabel(label,styleSheet='font-size:12px;color:#666;'))
-        leg.addStretch(); v.addLayout(leg)
+        leg.addStretch()
+        self.lbl_hidden=QLabel(''); self.lbl_hidden.setStyleSheet(f'font-size:13px;font-weight:bold;color:{C_RED};')
+        leg.addWidget(self.lbl_hidden); v.addLayout(leg)
         # Сетка столов фиксированного размера
         self.tables_grid=QGridLayout(); self.tables_grid.setSpacing(16)
         self.tables_grid.setAlignment(Qt.AlignmentFlag.AlignTop|Qt.AlignmentFlag.AlignLeft)
@@ -492,7 +497,7 @@ class POSPage(QWidget):
 
     # ── Загрузка товаров ──────────────────────────────────────────────────────
     def _load_goods(self):
-        self._gl=GoodsLoader(); self._gl.done.connect(self._on_goods); self._gl.start()
+        self._goods_loader.start(GoodsLoader())
 
     def reload_goods(self):
         """Перечитать товары и цены из базы (после правок в карточках)."""
@@ -597,24 +602,33 @@ class POSPage(QWidget):
             QApplication.quit()
 
     def _refresh_tables(self):
-        self._tl=TablesLoader(); self._tl.done.connect(self._on_tables); self._tl.start()
+        self._tables_loader.start(TablesLoader())
 
     def _on_tables(self,tables):
         # Сбрасываем
         for i in range(1,NUM_TABLES+1): self._table_accts[i]=None
         # Восстанавливаем из БД по TableNum в Note
         unassigned = []
-        for t in tables:
+        # Старые заказы раньше (ORDER BY ... DESC), чтобы при двух заказах на
+        # одном столе за ним остался первый, а второй не пропал с экрана
+        for t in reversed(tables):
             num = t.get('TableNum', 0)
-            if 1 <= num <= NUM_TABLES:
+            if 1 <= num <= NUM_TABLES and self._table_accts[num] is None:
                 self._table_accts[num] = t['Acct']
             else:
                 unassigned.append(t)
-        # Заказы без номера стола — на первый свободный
+        # Заказы без номера стола (и вторые заказы на одном столе) — на первый свободный
+        hidden = 0
         for t in unassigned:
             for i in range(1,NUM_TABLES+1):
                 if self._table_accts[i] is None:
                     self._table_accts[i] = t['Acct']; break
+            else:
+                hidden += 1
+        if hidden:
+            print(f'Открытых заказов не помещается на экран столов: {hidden}')
+        self.lbl_hidden.setText(f'⚠ Ещё открытых заказов: {hidden} — нет свободных столов на экране'
+                                if hidden else '')
         # Обновляем кнопки
         for i in range(1,NUM_TABLES+1):
             acct=self._table_accts[i]; b=self._table_btns[i]
@@ -660,18 +674,25 @@ class POSPage(QWidget):
         # Тот же товар по той же цене — увеличиваем количество в его строке
         ex=next((i for i in self.current_items if i.get('GoodID')==good['ID']
                  and abs(float(i.get('PriceOut') or 0)-price)<0.005),None)
+        new_order=False
         if ex:
-            ok=change_qty(ex['ID'],1)
+            ok,err=change_qty(self.current_acct,ex['ID'],1)
         else:
-            acct=add_item(self.current_acct,good['ID'],1.0,price,
+            acct,err=add_item(self.current_acct,good['ID'],1.0,price,
                 float(good.get('PriceIn') or 0),self.partner_id,self.obj_id,self.user_id,self.user_id,
                 self.current_table_num or 0)
             ok=acct is not None
             if ok and self.current_acct is None:
                 self.current_acct=acct; self._table_accts[self.current_table_num]=acct
+                new_order=True
         if not ok:
-            QMessageBox.critical(self,'Ошибка','Не удалось добавить позицию. Проверьте связь с базой и повторите.')
+            self._order_error('Не удалось добавить позицию',err); return
         self._reload_items()
+        if new_order and len(self.current_items)>1:
+            # add_item нашёл открытый заказ этого стола, созданный на другой кассе
+            QMessageBox.information(self,'Стол уже открыт',
+                f'Стол {self.current_table_num} уже открыт на другой кассе.\n'
+                'Позиция добавлена в его заказ.')
 
     def _reload_items(self):
         if self.current_acct is None: return
@@ -698,24 +719,39 @@ class POSPage(QWidget):
 
     def _chg_qty(self,item,delta):
         # Строка меняется на месте: стол, себестоимость и порядок в корзине сохраняются
-        if not change_qty(item['ID'],delta):
-            QMessageBox.critical(self,'Ошибка','Не удалось изменить количество. Повторите.')
+        ok,err=change_qty(self.current_acct,item['ID'],delta)
+        if not ok:
+            self._order_error('Не удалось изменить количество',err); return
         self._reload_items()
 
     def _del_line(self):
         row=self.cart.currentRow()
         if row<0 or row>=len(self.current_items): QMessageBox.information(self,'','Выберите строку'); return
-        if not remove_item(self.current_items[row]['ID']):
-            QMessageBox.critical(self,'Ошибка','Не удалось удалить строку. Повторите.')
+        ok,err=remove_item(self.current_acct,self.current_items[row]['ID'])
+        if not ok:
+            self._order_error('Не удалось удалить строку',err); return
         self._reload_items()
 
     def _cancel(self):
         if not self.current_acct: self._go_tables(); return
         if QMessageBox.question(self,'Отмена','Отменить весь заказ?',
             QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No)==QMessageBox.StandardButton.Yes:
-            if not cancel_table(self.current_acct):
-                QMessageBox.critical(self,'Ошибка','Не удалось отменить заказ. Повторите.'); return
+            ok,err=cancel_table(self.current_acct)
+            if not ok:
+                self._order_error('Не удалось отменить заказ',err); return
             self._go_tables()
+
+    def _order_error(self,title,err):
+        """Ошибка правки заказа. Если заказ тем временем оплатили на другой
+        кассе — возвращаемся к столам, иначе показываем заказ как он есть в базе."""
+        try: paid=bool(self.current_acct) and is_paid(self.current_acct)
+        except Exception as e: print(f'is_paid: {e}'); paid=False
+        if paid:
+            QMessageBox.warning(self,'Заказ закрыт',
+                'Этот заказ уже оплачен на другой кассе и больше не меняется.')
+            self._go_tables(); return
+        QMessageBox.critical(self,'Ошибка',f'{title}.\n{err or "Проверьте связь с базой и повторите."}')
+        self._reload_items()
 
     def _to_kitchen(self):
         if not self.current_items:
@@ -744,15 +780,25 @@ class POSPage(QWidget):
                         elif m in dlg.payments and m!=0: msg+=f'{names[m]}: {dlg.payments[m]:.2f}\n'
                     if dlg.change>0: msg+=f'Сдача: {dlg.change:.2f}'
                     QMessageBox.information(self,'✔ Оплачено',msg)
-                    # Печать чека
-                    try:
-                        from ui.printer import print_receipt
-                        print_receipt(self.current_acct, CAFE_NAME, dlg.received_cash, dlg.change)
-                    except Exception as pe:
-                        print(f'print error: {pe}')
+                    self._print_receipt(self.current_acct,dlg.received_cash,dlg.change)
                     self._go_tables()
                 else: QMessageBox.critical(self,'Ошибка',f'Не удалось провести оплату:\n{err}')
             except Exception as e: QMessageBox.critical(self,'Ошибка',str(e))
+
+    def _print_receipt(self,acct,received_cash,change):
+        """Печать чека; при ошибке кассир видит её и может повторить."""
+        from ui.printer import print_receipt
+        while True:
+            try: ok,err=print_receipt(acct,CAFE_NAME,received_cash,change)
+            except Exception as e: ok,err=False,str(e)
+            if ok: return
+            print(f'print error: {err}')
+            if QMessageBox.question(self,'Чек не напечатан',
+                f'Оплата проведена, но чек № {acct} не напечатан:\n{err}\n\n'
+                'Повторить печать?\n(Позже чек можно напечатать в «Мои заказы».)',
+                QMessageBox.StandardButton.Retry|QMessageBox.StandardButton.Close
+            )!=QMessageBox.StandardButton.Retry:
+                return
 
     def _update_cart(self):
         self.cart.setRowCount(len(self.current_items)); total=0.0

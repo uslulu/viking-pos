@@ -11,6 +11,7 @@ from db.goods import (
     get_all, get_groups, get_by_id, create, update, delete,
     create_group, update_group, delete_group
 )
+from ui.loader import LoaderSlot
 
 C_BLUE = '#2B579A'; C_BLUE_D = '#1E3F7A'
 
@@ -144,7 +145,9 @@ class GoodsLoader(QThread):
     def __init__(self, search="", group_id=None):
         super().__init__(); self.search = search; self.group_id = group_id
     def run(self):
-        self.done.emit(get_all(self.search, self.group_id))
+        try: goods = get_all(self.search, self.group_id)
+        except Exception as e: print(f'GoodsLoader: {e}'); goods = []
+        self.done.emit(goods)
 
 
 class GoodsPage(QWidget):
@@ -153,7 +156,7 @@ class GoodsPage(QWidget):
         self._goods = []
         self._groups = []
         self._current_group_id = None  # None=все, -1=без группы, int=группа
-        self._loader = None
+        self._loader = LoaderSlot(self._on_goods)
         self._search_timer = QTimer(); self._search_timer.setSingleShot(True)
         self._search_timer.timeout.connect(self._load_goods)
         self._build_ui()
@@ -315,9 +318,7 @@ class GoodsPage(QWidget):
         search = self.inp_search.text().strip()
         gid = self._current_group_id  # None=все, -1=без группы, int=группа
         self.lbl_status.setText("Загрузка...")
-        self._loader = GoodsLoader(search, gid)
-        self._loader.done.connect(self._on_goods)
-        self._loader.start()
+        self._loader.start(GoodsLoader(search, gid))
 
     def _on_goods(self, goods):
         self._goods = goods

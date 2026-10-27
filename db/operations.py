@@ -25,40 +25,44 @@ def order_total(items, pct: float = 0.0) -> float:
 
 
 def get_open_tables():
-    """Незакрытые заказы — те у которых нет оплаты"""
+    """Незакрытые заказы — те у которых нет оплаты. Одна строка на заказ,
+    даже если позиции добавляли разные официанты."""
     sql = """
         SELECT
             o.Acct,
-            o.ObjectID,
-            ob.Name  AS ObjectName,
-            p.Company AS PartnerName,
-            u.Name   AS UserName,
-            MAX(o.Date) AS LastDate,
+            MAX(o.ObjectID) AS ObjectID,
+            MAX(ob.Name)    AS ObjectName,
+            MAX(p.Company)  AS PartnerName,
+            MAX(u.Name)     AS UserName,
+            MAX(o.Date)     AS LastDate,
             SUM(o.Qtty * o.PriceOut) AS Total,
-            MAX(o.Note) AS Note
+            MAX(o.Note)     AS Note
         FROM Operations o
         LEFT JOIN Objects  ob ON o.ObjectID  = ob.ID
         LEFT JOIN Partners p  ON o.PartnerID = p.ID
         LEFT JOIN Users    u  ON o.OperatorID= u.ID
         WHERE o.OperType = 2
           AND NOT EXISTS (
-              SELECT 1 FROM Payments p WHERE p.OperType = 2 AND p.Acct = o.Acct
+              SELECT 1 FROM Payments pay WHERE pay.OperType = 2 AND pay.Acct = o.Acct
           )
-        GROUP BY o.Acct, o.ObjectID, ob.Name, p.Company, u.Name
+        GROUP BY o.Acct
         ORDER BY MAX(o.Date) DESC
     """
     rows = fetch_all(sql)
     # Извлекаем номер стола из Note
     for row in rows:
-        note = row.get('Note') or ''
-        if note.startswith('TABLE:'):
-            try:
-                row['TableNum'] = int(note.split(':')[1])
-            except:
-                row['TableNum'] = 0
-        else:
-            row['TableNum'] = 0
+        row['TableNum'] = _table_num(row.get('Note'))
     return rows
+
+
+def _table_num(note) -> int:
+    note = note or ''
+    if note.startswith('TABLE:'):
+        try:
+            return int(note.split(':')[1])
+        except ValueError:
+            return 0
+    return 0
 
 
 def get_table_items(acct: int) -> list:
@@ -80,18 +84,62 @@ def get_table_items(acct: int) -> list:
     return fetch_all(sql, [acct])
 
 
-def add_item(acct: Optional[int], good_id: int, qty: float, price_out: float,
-             price_in: float, partner_id: int, object_id: int,
-             operator_id: int, user_id: int, table_num: int = 0) -> Optional[int]:
-    """Добавляет строку заказа и возвращает номер заказа (None — ошибка).
-    acct=None — новый заказ: номер выдаётся в той же транзакции под
-    блокировкой, чтобы два устройства не получили один и тот же номер."""
+def _lock_unpaid(cur, acct: int):
+    """Блокирует оплату заказа до конца транзакции; если заказ уже оплачен —
+    OrderError. close_table берёт ту же блокировку первой, поэтому правка и
+    оплата одного заказа с разных касс выполняются строго по очереди.
+    Порядок блокировок везде одинаковый: Payments, затем Operations."""
+    cur.execute("SELECT 1 FROM Payments WITH (UPDLOCK, HOLDLOCK) "
+                "WHERE OperType=2 AND Acct=?", [acct])
+    if cur.fetchone():
+        raise OrderError("Заказ уже оплачен на другой кассе")
+
+
+def _run_order_tx(name: str, work) -> tuple:
+    """Выполняет work(cur) в транзакции. Возвращает (результат, текст ошибки)."""
     conn = _get_conn(); cur = conn.cursor()
     try:
+        result = work(cur)
+        conn.commit()
+        return result, ""
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        print(f"{name} error: {e}")
+        return None, str(e) if isinstance(e, OrderError) else f"Ошибка базы данных: {e}"
+    finally:
+        cur.close()
+
+
+def add_item(acct: Optional[int], good_id: int, qty: float, price_out: float,
+             price_in: float, partner_id: int, object_id: int,
+             operator_id: int, user_id: int, table_num: int = 0) -> tuple:
+    """Добавляет строку заказа. Возвращает (номер заказа, текст ошибки);
+    номер None — ошибка.
+    acct=None — новый заказ. Если на этом столе уже есть открытый заказ
+    (его открыли на другой кассе), позиция добавляется в него, иначе номер
+    выдаётся в той же транзакции под блокировкой, чтобы два устройства не
+    получили один и тот же номер."""
+    note = f"TABLE:{table_num}" if table_num else ""
+
+    def work(cur):
+        nonlocal acct
+        if acct is None and table_num:
+            cur.execute("""
+                SELECT TOP 1 o.Acct FROM Operations o WITH (UPDLOCK, HOLDLOCK)
+                WHERE o.OperType=2 AND o.Note=?
+                  AND NOT EXISTS (SELECT 1 FROM Payments pay
+                                  WHERE pay.OperType=2 AND pay.Acct=o.Acct)
+                ORDER BY o.Acct
+            """, [note])
+            row = cur.fetchone()
+            if row:
+                acct = int(row[0])
         if acct is None:
             cur.execute("SELECT ISNULL(MAX(Acct), 0) + 1 FROM Operations WITH (UPDLOCK, HOLDLOCK)")
             acct = int(cur.fetchone()[0])
-        note = f"TABLE:{table_num}" if table_num else ""
+        else:
+            _lock_unpaid(cur, acct)
         now = datetime.now()
         cur.execute("""
             INSERT INTO Operations
@@ -101,38 +149,46 @@ def add_item(acct: Optional[int], good_id: int, qty: float, price_out: float,
             VALUES (2,?,?,?,?,?,?,-1,?,?,0,0,0,1,1,?,?,?,?)
         """, [acct, good_id, partner_id or 1, object_id or 1, operator_id,
               qty, price_in, price_out, now, user_id, now, note])
-        conn.commit()
         return acct
-    except Exception as e:
-        try: conn.rollback()
-        except Exception: pass
-        print(f"add_item error: {e}")
-        return None
-    finally:
-        cur.close()
+
+    return _run_order_tx("add_item", work)
 
 
-def change_qty(operation_id: int, delta: float) -> bool:
+def change_qty(acct: int, operation_id: int, delta: float) -> tuple:
     """Меняет количество в строке заказа на месте (строка, стол и
-    себестоимость сохраняются). Количество не может стать <= 0."""
-    try:
-        n = execute("""
+    себестоимость сохраняются). Количество не может стать <= 0.
+    Оплаченный заказ не меняется. Возвращает (ok, текст ошибки)."""
+    def work(cur):
+        _lock_unpaid(cur, acct)
+        cur.execute("""
             UPDATE Operations SET Qtty = Qtty + ?
-            WHERE ID = ? AND OperType = 2 AND Qtty + ? > 0
-        """, [delta, operation_id, delta])
-        return n == 1
-    except Exception as e:
-        print(f"change_qty error: {e}")
-        return False
-
-
-def remove_item(operation_id: int) -> bool:
-    try:
-        execute("DELETE FROM Operations WHERE ID=? AND OperType=2", [operation_id])
+            WHERE ID = ? AND Acct = ? AND OperType = 2 AND Qtty + ? > 0
+        """, [delta, operation_id, acct, delta])
+        if cur.rowcount != 1:
+            raise OrderError("Строка не найдена — заказ изменён на другой кассе")
         return True
-    except Exception as e:
-        print(f"remove_item error: {e}")
-        return False
+
+    ok, err = _run_order_tx("change_qty", work)
+    return bool(ok), err
+
+
+def remove_item(acct: int, operation_id: int) -> tuple:
+    """Удаляет строку неоплаченного заказа. Возвращает (ok, текст ошибки)."""
+    def work(cur):
+        _lock_unpaid(cur, acct)
+        cur.execute("DELETE FROM Operations WHERE ID=? AND Acct=? AND OperType=2",
+                    [operation_id, acct])
+        if cur.rowcount != 1:
+            raise OrderError("Строка не найдена — заказ изменён на другой кассе")
+        return True
+
+    ok, err = _run_order_tx("remove_item", work)
+    return bool(ok), err
+
+
+def is_paid(acct: int) -> bool:
+    return fetch_one("SELECT TOP 1 1 AS x FROM Payments WHERE OperType=2 AND Acct=?",
+                     [acct]) is not None
 
 
 def close_table(acct: int, payments: dict, partner_id: int,
@@ -186,13 +242,15 @@ def close_table(acct: int, payments: dict, partner_id: int,
         cur.close()
 
 
-def cancel_table(acct: int) -> bool:
-    try:
-        execute("DELETE FROM Operations WHERE Acct=? AND OperType=2", [acct])
+def cancel_table(acct: int) -> tuple:
+    """Удаляет неоплаченный заказ целиком. Возвращает (ok, текст ошибки)."""
+    def work(cur):
+        _lock_unpaid(cur, acct)
+        cur.execute("DELETE FROM Operations WHERE Acct=? AND OperType=2", [acct])
         return True
-    except Exception as e:
-        print(f"cancel_table error: {e}")
-        return False
+
+    ok, err = _run_order_tx("cancel_table", work)
+    return bool(ok), err
 
 
 def get_objects() -> list:
