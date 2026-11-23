@@ -185,20 +185,15 @@ def print_receipt_dialog(acct: int, parent=None, cafe_name: str = CAFE_NAME):
 
 
 def print_kitchen(acct: int, table_num: int = 0, waiter: str = "") -> tuple:
-    """Кухонный чек: весь заказ стола, без цен, крупным шрифтом."""
-    try:
-        items = db.fetch_all("""
-            SELECT g.Name as GoodName, SUM(o.Qtty) as Qtty,
-                   SUM(o.Qtty * o.PriceOut) as LineTotal
-            FROM Operations o
-            JOIN Goods g ON o.GoodID = g.ID
-            WHERE o.OperType = 2 AND o.Acct = ?
-            GROUP BY g.Name, o.GoodID
-            ORDER BY MIN(o.ID)
-        """, [acct])
-        if not items:
-            return False, "В заказе нет позиций"
+    """Возвращает (отправлено на принтер, текст ошибки)."""
+    from db.kitchen import send_kitchen_items
 
+    return send_kitchen_items(acct, lambda items: _render_kitchen(items, acct, table_num, waiter))
+
+
+def _render_kitchen(items, acct, table_num, waiter) -> tuple:
+    """Печатает позиции одной отправки на кухню."""
+    try:
         # Шапка ~60 мм, позиция крупным шрифтом с переносом — до 3 строк (~15 мм)
         printer = get_printer(60 + 15 * len(items) + 30)
         painter = QPainter()
@@ -221,7 +216,8 @@ def print_kitchen(acct: int, table_num: int = 0, waiter: str = "") -> tuple:
             """Если блок не помещается на странице — следующая страница."""
             nonlocal y
             if y + h > H - 10:
-                printer.newPage()
+                if not printer.newPage():
+                    raise RuntimeError("Не удалось начать новую страницу кухонного чека")
                 y = 30
 
         def draw(txt, size=9, bold=False, align=Qt.AlignmentFlag.AlignLeft,
@@ -278,7 +274,10 @@ def print_kitchen(acct: int, table_num: int = 0, waiter: str = "") -> tuple:
         line_step(max(h1, h2))
         separator('=')
         y += lh * 2
-        painter.end()
+        if not painter.end() or printer.printerState() in (
+            QPrinter.PrinterState.Error, QPrinter.PrinterState.Aborted
+        ):
+            return False, "Принтер не принял кухонный чек"
         return True, ""
     except Exception as e:
         return False, str(e)

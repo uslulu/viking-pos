@@ -754,14 +754,16 @@ class POSPage(QWidget):
         self._reload_items()
 
     def _to_kitchen(self):
-        if not self.current_items:
+        if not self.current_acct:
             QMessageBox.information(self,'','Добавьте товары в заказ'); return
         from ui.printer import print_kitchen
         ok,err=print_kitchen(self.current_acct,self.current_table_num or 0,self.user_name)
         if ok:
             QMessageBox.information(self,'🍳 На кухню',f'Заказ стола {self.current_table_num or ""} отправлен на печать')
-        else:
+        elif err:
             QMessageBox.critical(self,'Ошибка печати',f'Не удалось напечатать:\n{err}')
+        else:
+            QMessageBox.information(self,'🍳 На кухню','Нет новых позиций для печати')
 
     def _pay(self):
         if not self.current_items: QMessageBox.information(self,'','Добавьте товары'); return
