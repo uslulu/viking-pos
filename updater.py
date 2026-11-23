@@ -16,8 +16,9 @@
 На любой ошибке (нет сети, битый архив, нет места) файлы не меняются,
 причина пишется в update.log, запускается текущая версия.
 
-Только стандартная библиотека: обновлятор не должен зависеть от того,
-что он обновляет. config.ini, backup/ и логи никогда не перезаписываются.
+Для проверки HTTPS в Windows используется truststore, если он установлен.
+Если модуля нет, обновлятор использует стандартную библиотеку.
+config.ini, backup/ и логи никогда не перезаписываются.
 
 Ручной откат на предыдущую версию (rollback.bat):
 
@@ -215,6 +216,13 @@ def ssl_context(cfg) -> ssl.SSLContext:
     ca_file = cfg.get("update", "ca_file").strip()
     if ca_file:
         return ssl.create_default_context(cafile=os.path.join(APP_DIR, ca_file))
+    if sys.platform == "win32":
+        try:
+            import truststore
+        except ImportError:
+            log.info("truststore недоступен — используется стандартная проверка HTTPS Python")
+        else:
+            return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     return ssl.create_default_context()
 
 
