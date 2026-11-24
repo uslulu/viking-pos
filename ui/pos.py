@@ -423,6 +423,10 @@ class POSPage(QWidget):
         self.lbl_hdr_total.hide()  # итог показан в блоке ИТОГО справа
         bk=_btn('🍳  НА КУХНЮ',color='#B35C00',fs=14,minh=38); bk.setMinimumWidth(130); bk.clicked.connect(self._to_kitchen)
         hh.addWidget(bk)
+        preview_receipt = _btn('Пред. чек', color=C_BLUE_D, fs=14, minh=38)
+        preview_receipt.setMinimumWidth(105)
+        preview_receipt.clicked.connect(self._print_preliminary_receipt)
+        hh.addWidget(preview_receipt)
         bp=_btn('✔  ОПЛАТИТЬ',color=C_GREEN,fs=14,minh=38); bp.setMinimumWidth(130); bp.clicked.connect(self._pay)
         hh.addWidget(bp); root.addWidget(hdr)
         body=QHBoxLayout(); body.setContentsMargins(0,0,0,0); body.setSpacing(0)
@@ -764,6 +768,16 @@ class POSPage(QWidget):
             QMessageBox.critical(self,'Ошибка печати',f'Не удалось напечатать:\n{err}')
         else:
             QMessageBox.information(self,'🍳 На кухню','Нет новых позиций для печати')
+
+    def _print_preliminary_receipt(self):
+        if not self.current_acct:
+            QMessageBox.information(self, 'Пред. чек', 'Добавьте товары в заказ')
+            return
+
+        from ui.printer import print_receipt
+        ok, error = print_receipt(self.current_acct, preliminary=True)
+        if not ok:
+            QMessageBox.critical(self, 'Ошибка печати', f'Не удалось напечатать пред. чек:\n{error}')
 
     def _pay(self):
         if not self.current_items: QMessageBox.information(self,'','Добавьте товары'); return

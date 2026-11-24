@@ -4,6 +4,7 @@ from PyQt6.QtCore import Qt, QRectF, QMarginsF, QSizeF
 from PyQt6.QtGui import QPageSize, QPageLayout
 from datetime import datetime
 import db.connection as db
+from db.operations import order_total
 from app_config import CAFE_NAME
 from ui.fmt import fmt_qty, fmt_price
 
@@ -47,7 +48,8 @@ def _original_price(item) -> float:
 
 
 def print_receipt(acct: int, cafe_name: str = CAFE_NAME,
-                  received_cash: float = None, change: float = 0.0) -> tuple:
+                  received_cash: float = None, change: float = 0.0, *,
+                  preliminary: bool = False) -> tuple:
     try:
         items = db.fetch_all("""
             SELECT g.Name as GoodName, o.Qtty, o.PriceOut, o.Discount,
@@ -56,30 +58,39 @@ def print_receipt(acct: int, cafe_name: str = CAFE_NAME,
             FROM Operations o
             JOIN Goods g ON o.GoodID = g.ID
             WHERE o.OperType = 2 AND o.Acct = ?
+              AND (? = 0 OR NOT EXISTS (
+                  SELECT 1 FROM Payments p WHERE p.OperType = 2 AND p.Acct = o.Acct
+              ))
             ORDER BY o.ID
-        """, [acct])
+        """, [acct, int(preliminary)])
 
         if not items:
-            return False, "Заказ не найден"
+            return False, "Открытый заказ не найден или пуст" if preliminary else "Заказ не найден"
 
-        payment = db.fetch_one("""
-            SELECT
-                SUM(CASE WHEN Mode=0 THEN Qtty ELSE 0 END) as Cash,
-                SUM(CASE WHEN Mode=1 THEN Qtty ELSE 0 END) as Card,
-                SUM(CASE WHEN Mode=2 THEN Qtty ELSE 0 END) as Transfer,
-                SUM(Qtty) as Total
-            FROM Payments WHERE OperType=2 AND Acct=?
-        """, [acct])
+        payment = {}
+        if not preliminary:
+            payment = db.fetch_one("""
+                SELECT
+                    SUM(CASE WHEN Mode=0 THEN Qtty ELSE 0 END) as Cash,
+                    SUM(CASE WHEN Mode=1 THEN Qtty ELSE 0 END) as Card,
+                    SUM(CASE WHEN Mode=2 THEN Qtty ELSE 0 END) as Transfer,
+                    SUM(Qtty) as Total
+                FROM Payments WHERE OperType=2 AND Acct=?
+            """, [acct]) or {}
 
-        total = round(sum(float(i.get('LineTotal') or 0) for i in items), 2)
-        orig_total = round(sum(float(i.get('Qtty') or 0) * _original_price(i)
-                               for i in items), 2)
+        if preliminary:
+            total = order_total(items)
+        else:
+            total = round(sum(float(i.get('LineTotal') or 0) for i in items), 2)
+        orig_total = total if preliminary else round(
+            sum(float(i.get("Qtty") or 0) * _original_price(i) for i in items), 2
+        )
         discount = round(orig_total - total, 2)
         disc_pct = max(float(i.get('Discount') or 0) for i in items)
-        cash = float((payment or {}).get('Cash') or 0)
-        card = float((payment or {}).get('Card') or 0)
-        transfer = float((payment or {}).get('Transfer') or 0)
-        shown_cash = received_cash if received_cash is not None else cash
+        cash = float(payment.get('Cash') or 0)
+        card = float(payment.get('Card') or 0)
+        transfer = float(payment.get('Transfer') or 0)
+        shown_cash = cash if preliminary or received_cash is None else received_cash
 
         # Шапка ~5 строк, по 2 на позицию, итоги и оплата ~10
         printer = get_printer((5 + 2 * len(items) + 12) * LINE_MM + 10)
@@ -134,7 +145,11 @@ def print_receipt(acct: int, cafe_name: str = CAFE_NAME,
         # Шапка
         if cafe_name:
             draw(cafe_name, size=12, bold=True, align=Qt.AlignmentFlag.AlignHCenter)
-        draw(f"Чек № {acct}", size=8, align=Qt.AlignmentFlag.AlignHCenter)
+        if preliminary:
+            draw("ПРЕДВАРИТЕЛЬНЫЙ ЧЕК", size=8, bold=True, align=Qt.AlignmentFlag.AlignHCenter)
+            draw(f"Заказ № {acct}", size=8, align=Qt.AlignmentFlag.AlignHCenter)
+        else:
+            draw(f"Чек № {acct}", size=8, align=Qt.AlignmentFlag.AlignHCenter)
         draw(datetime.now().strftime("%d.%m.%Y  %H:%M"),
              size=8, align=Qt.AlignmentFlag.AlignHCenter)
         separator()
@@ -142,7 +157,7 @@ def print_receipt(acct: int, cafe_name: str = CAFE_NAME,
         # Позиции: название отдельной строкой, под ним «кол-во x цена   сумма»
         for item in items:
             qty = float(item.get('Qtty') or 0)
-            price = _original_price(item)
+            price = float(item.get("PriceOut") or 0) if preliminary else _original_price(item)
             draw((item.get('GoodName') or '')[:30], size=8)
             two(f"  {fmt_qty(qty)} x {fmt_price(price)}", f"{qty * price:.2f}", size=8)
 
@@ -150,7 +165,7 @@ def print_receipt(acct: int, cafe_name: str = CAFE_NAME,
         if discount > 0.009:
             two("Сумма:", f"{orig_total:.2f}")
             two(f"Скидка {disc_pct:g}%:", f"-{discount:.2f}")
-        two("ИТОГО:", f"{total:.2f}", size=10, bold=True)
+        two("К ОПЛАТЕ:" if preliminary else "ИТОГО:", f"{total:.2f}", size=10, bold=True)
 
         if shown_cash > 0:
             two("Наличными:", f"{shown_cash:.2f}")
@@ -162,7 +177,8 @@ def print_receipt(acct: int, cafe_name: str = CAFE_NAME,
             two("Переводом:", f"{transfer:.2f}")
 
         separator('=')
-        draw("Спасибо за посещение!", size=8, bold=True,
+        draw("Оплата не проведена" if preliminary else "Спасибо за посещение!",
+             size=8, bold=True,
              align=Qt.AlignmentFlag.AlignHCenter)
         y += lh * 2  # отступ перед отрезом
 
