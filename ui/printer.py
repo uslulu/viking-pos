@@ -11,7 +11,11 @@ from ui.fmt import fmt_qty, fmt_price
 PRINTER_NAME = "T58&R58"
 
 PAGE_MIN_MM = 200     # как раньше: короткие чеки печатаются так же
-LINE_MM = 4.9         # высота строки чека (lh = 9% от ширины 54 мм)
+RECEIPT_FONT = "Arial"
+TITLE_PT = 14
+ITEM_PT = 10
+DETAIL_PT = 9
+TOTAL_PT = 12
 
 
 def get_printer(height_mm: float = PAGE_MIN_MM) -> QPrinter:
@@ -92,64 +96,67 @@ def print_receipt(acct: int, cafe_name: str = CAFE_NAME,
         transfer = float(payment.get('Transfer') or 0)
         shown_cash = cash if preliminary or received_cash is None else received_cash
 
-        # Шапка ~5 строк, по 2 на позицию, итоги и оплата ~10
-        printer = get_printer((5 + 2 * len(items) + 12) * LINE_MM + 10)
+        # Две строки на позицию плюс запас на переносы длинных названий.
+        printer = get_printer(105 + 20 * len(items))
         painter = QPainter()
         if not painter.begin(printer):
             return False, "Не удалось открыть принтер"
 
-        W = painter.device().width()
-        H = painter.device().height()
+        width = painter.device().width() - 10
+        height = painter.device().height()
         y = 30
-        lh = int(W * 0.09)  # высота строки пропорционально ширине
+        spacing = int(width * 0.0225)
+        wrap = int(Qt.TextFlag.TextWordWrap)
 
-        def room(h):
-            """Если строка не помещается на странице — следующая страница."""
+        def room(block_height):
             nonlocal y
-            if y + h > H - 10:
-                printer.newPage()
+            if y + block_height > height - 10:
+                if not printer.newPage():
+                    raise RuntimeError("Не удалось начать новую страницу чека")
                 y = 30
 
-        def draw(txt, size=8, bold=False,
-                 align=Qt.AlignmentFlag.AlignLeft, dy_mult=1.0):
+        def measure(text, column_width, flags):
+            return painter.boundingRect(QRectF(0, 0, column_width, 10_000),
+                                        int(flags) | wrap, text).height()
+
+        def draw(text, size=DETAIL_PT, bold=False, align=Qt.AlignmentFlag.AlignLeft):
             nonlocal y
-            h = int(lh * dy_mult * 1.4)
-            room(h)
-            f = QFont("Courier New", size)
-            f.setBold(bold)
-            painter.setFont(f)
-            painter.drawText(
-                QRectF(5, y, W - 10, h),
-                align | Qt.AlignmentFlag.AlignVCenter,
-                txt
-            )
-            y += int(lh * dy_mult)
+            font = QFont(RECEIPT_FONT, size)
+            font.setBold(bold)
+            painter.setFont(font)
+            block_height = measure(text, width, align)
+            room(block_height)
+            painter.drawText(QRectF(5, y, width, block_height), int(align) | wrap, text)
+            y += int(block_height + spacing)
 
         def separator(char='-'):
-            draw(char * 30, size=7, dy_mult=0.7)
+            draw(char * 32, size=7)
 
-        def two(left, right, size=8, bold=False):
+        def two(left, right, size=DETAIL_PT, bold=False):
             nonlocal y
-            h = int(lh * 1.4)
-            room(h)
-            f = QFont("Courier New", size); f.setBold(bold)
-            painter.setFont(f)
-            lw = int((W - 10) * 0.65)
-            rw = int((W - 10) * 0.35)
-            painter.drawText(QRectF(5, y, lw, h),
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, left)
-            painter.drawText(QRectF(5 + lw, y, rw, h),
-                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, right)
-            y += lh
+            font = QFont(RECEIPT_FONT, size)
+            font.setBold(bold)
+            painter.setFont(font)
+            left_width = int(width * 0.6)
+            right_width = width - left_width
+            left_align = Qt.AlignmentFlag.AlignLeft
+            right_align = Qt.AlignmentFlag.AlignRight
+            block_height = max(measure(left, left_width, left_align),
+                               measure(right, right_width, right_align))
+            room(block_height)
+            painter.drawText(QRectF(5, y, left_width, block_height), int(left_align) | wrap, left)
+            painter.drawText(QRectF(5 + left_width, y, right_width, block_height),
+                             int(right_align) | wrap, right)
+            y += int(block_height + spacing)
 
         # Шапка
         if cafe_name:
-            draw(cafe_name, size=12, bold=True, align=Qt.AlignmentFlag.AlignHCenter)
+            draw(cafe_name, size=TOTAL_PT, bold=True, align=Qt.AlignmentFlag.AlignHCenter)
         if preliminary:
-            draw("ПРЕДВАРИТЕЛЬНЫЙ ЧЕК", size=8, bold=True, align=Qt.AlignmentFlag.AlignHCenter)
+            draw("ПРЕДВАРИТЕЛЬНЫЙ ЧЕК", size=TITLE_PT, bold=True, align=Qt.AlignmentFlag.AlignHCenter)
             draw(f"Заказ № {acct}", size=8, align=Qt.AlignmentFlag.AlignHCenter)
         else:
-            draw(f"Чек № {acct}", size=8, align=Qt.AlignmentFlag.AlignHCenter)
+            draw(f"Чек № {acct}", size=TITLE_PT, bold=True, align=Qt.AlignmentFlag.AlignHCenter)
         draw(datetime.now().strftime("%d.%m.%Y  %H:%M"),
              size=8, align=Qt.AlignmentFlag.AlignHCenter)
         separator()
@@ -158,14 +165,14 @@ def print_receipt(acct: int, cafe_name: str = CAFE_NAME,
         for item in items:
             qty = float(item.get('Qtty') or 0)
             price = float(item.get("PriceOut") or 0) if preliminary else _original_price(item)
-            draw((item.get('GoodName') or '')[:30], size=8)
-            two(f"  {fmt_qty(qty)} x {fmt_price(price)}", f"{qty * price:.2f}", size=8)
+            draw(item.get('GoodName') or '', size=ITEM_PT, bold=True)
+            two(f"{fmt_qty(qty)} x {fmt_price(price)}", f"{qty * price:.2f}")
 
         separator()
         if discount > 0.009:
             two("Сумма:", f"{orig_total:.2f}")
             two(f"Скидка {disc_pct:g}%:", f"-{discount:.2f}")
-        two("К ОПЛАТЕ:" if preliminary else "ИТОГО:", f"{total:.2f}", size=10, bold=True)
+        two("К ОПЛАТЕ:" if preliminary else "ИТОГО:", f"{total:.2f}", size=TOTAL_PT, bold=True)
 
         if shown_cash > 0:
             two("Наличными:", f"{shown_cash:.2f}")
@@ -177,12 +184,14 @@ def print_receipt(acct: int, cafe_name: str = CAFE_NAME,
             two("Переводом:", f"{transfer:.2f}")
 
         separator('=')
-        draw("Оплата не проведена" if preliminary else "Спасибо за посещение!",
-             size=8, bold=True,
-             align=Qt.AlignmentFlag.AlignHCenter)
-        y += lh * 2  # отступ перед отрезом
+        if not preliminary:
+            draw("Спасибо за посещение!", size=8, bold=True,
+                 align=Qt.AlignmentFlag.AlignHCenter)
 
-        painter.end()
+        if not painter.end() or printer.printerState() in (
+            QPrinter.PrinterState.Error, QPrinter.PrinterState.Aborted
+        ):
+            return False, "Принтер не принял чек"
         return True, ""
 
     except Exception as e:
@@ -223,7 +232,7 @@ def _render_kitchen(items, acct, table_num, waiter) -> tuple:
         wrap = Qt.TextFlag.TextWordWrap
 
         def measure(txt, size, bold, align, w):
-            f = QFont("Arial", size); f.setBold(bold)
+            f = QFont(RECEIPT_FONT, size); f.setBold(bold)
             painter.setFont(f)
             return painter.boundingRect(QRectF(0, 0, w, 10_000),
                                         int(align) | int(wrap), txt).height()
@@ -236,7 +245,7 @@ def _render_kitchen(items, acct, table_num, waiter) -> tuple:
                     raise RuntimeError("Не удалось начать новую страницу кухонного чека")
                 y = 30
 
-        def draw(txt, size=9, bold=False, align=Qt.AlignmentFlag.AlignLeft,
+        def draw(txt, size=DETAIL_PT, bold=False, align=Qt.AlignmentFlag.AlignLeft,
                  x=5, width=None):
             w = width or (W - 10)
             h = measure(txt, size, bold, align, w)
@@ -247,7 +256,7 @@ def _render_kitchen(items, acct, table_num, waiter) -> tuple:
             nonlocal y
             y += int(h + lh * 0.25)
 
-        def line(txt, size=9, bold=False, align=Qt.AlignmentFlag.AlignLeft):
+        def line(txt, size=DETAIL_PT, bold=False, align=Qt.AlignmentFlag.AlignLeft):
             room(measure(txt, size, bold, align, W - 10))
             line_step(draw(txt, size, bold, align))
 
@@ -255,7 +264,7 @@ def _render_kitchen(items, acct, table_num, waiter) -> tuple:
             line(char * 32, size=7)
 
         center = Qt.AlignmentFlag.AlignHCenter
-        line("НА КУХНЮ", size=14, bold=True, align=center)
+        line("НА КУХНЮ", size=TITLE_PT, bold=True, align=center)
         if table_num:
             line(f"СТОЛ {table_num}", size=18, bold=True, align=center)
         line(f"Заказ № {acct}", size=8, align=center)
@@ -275,17 +284,17 @@ def _render_kitchen(items, acct, table_num, waiter) -> tuple:
             lt = float(it.get('LineTotal') or 0); total += lt
             name = it.get('GoodName') or ''
             # Строка позиции целиком на одной странице
-            room(measure(name, 10, True, left, name_w))
-            h1 = draw(f"{fmt_qty(qty)} x", size=10, bold=True, x=5, width=qty_w)
-            h2 = draw(name, size=10, bold=True, x=5 + qty_w, width=name_w)
-            h3 = draw(f"{lt:.2f}", size=9, align=right,
+            room(measure(name, ITEM_PT, True, left, name_w))
+            h1 = draw(f"{fmt_qty(qty)} x", size=ITEM_PT, bold=True, x=5, width=qty_w)
+            h2 = draw(name, size=ITEM_PT, bold=True, x=5 + qty_w, width=name_w)
+            h3 = draw(f"{lt:.2f}", size=DETAIL_PT, align=right,
                       x=5 + qty_w + name_w, width=sum_w)
             line_step(max(h1, h2, h3))
 
         separator()
-        room(measure("ИТОГО:", 12, True, left, W - 10))
-        h1 = draw("ИТОГО:", size=12, bold=True, x=5, width=int((W - 10) * 0.5))
-        h2 = draw(f"{total:.2f}", size=12, bold=True, align=right,
+        room(measure("ИТОГО:", TOTAL_PT, True, left, W - 10))
+        h1 = draw("ИТОГО:", size=TOTAL_PT, bold=True, x=5, width=int((W - 10) * 0.5))
+        h2 = draw(f"{total:.2f}", size=TOTAL_PT, bold=True, align=right,
                   x=5 + int((W - 10) * 0.5), width=int((W - 10) * 0.5))
         line_step(max(h1, h2))
         separator('=')
